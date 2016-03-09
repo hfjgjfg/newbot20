@@ -1,222 +1,143 @@
-do
-
--- Returns the key (index) in the config.enabled_plugins table
-local function plugin_enabled( name )
-  for k,v in pairs(_config.enabled_plugins) do
-    if name == v then
-      return k
-    end
-  end
-  -- If not found
-  return false
+local function save_filter(msg, name, value)
+ local hash = nil
+ if msg.to.type == 'chat' then
+  hash = 'chat:'..msg.to.id..':filters'
+ end
+ if msg.to.type == 'user' then
+  return 'فقط در گروه'
+ end
+ if hash then
+  redis:hset(hash, name, value)
+  return "انجام شد"
+ end
 end
 
--- Returns true if file exists in plugins folder
-local function plugin_exists( name )
-  for k,v in pairs(plugins_names()) do
-    if name..'.lua' == v then
-      return true
-    end
-  end
-  return false
-end
+local function get_filter_hash(msg)
+ if msg.to.type == 'chat' then
+  return 'chat:'..msg.to.id..':filters'
+ end
+end 
 
-local function list_all_plugins(only_enabled)
-  local text = ''
-  local nsum = 0
-  for k, v in pairs( plugins_names( )) do
-    --  âœ” enabled, â‌Œ disabled
-    local status = 'â‌Œ'
-    nsum = nsum+1
-    nact = 0
-    -- Check if is enabled
-    for k2, v2 in pairs(_config.enabled_plugins) do
-      if v == v2..'.lua' then 
-        status = 'âœ”' 
-      end
-      nact = nact+1
-    end
-    if not only_enabled or status == 'âœ”' then
-      -- get the name
-      v = string.match (v, "(.*)%.lua")
-      text = text..nsum..'. '..v..'  '..status..'\n'
-    end
+local function list_filter(msg)
+ if msg.to.type == 'user' then
+  return 'فقط در گروه'
+ end
+ local hash = get_filter_hash(msg)
+ if hash then
+  local names = redis:hkeys(hash)
+  local text = 'لیست کلمات فیلتر شده:\n______________________________\n'
+  for i=1, #names do
+   text = text..'> '..names[i]..'\n'
   end
-  local text = text..'\nThere are '..nsum..' plugins installed.\n'..nact..' plugins enabled and '..nsum-nact..' disabled'
   return text
+ end
 end
 
-local function list_plugins(only_enabled)
-  local text = ''
-  local nsum = 0
-  for k, v in pairs( plugins_names( )) do
-    --  âœ” enabled, â‌Œ disabled
-    local status = 'â‌Œ'
-    nsum = nsum+1
-    nact = 0
-    -- Check if is enabled
-    for k2, v2 in pairs(_config.enabled_plugins) do
-      if v == v2..'.lua' then 
-        status = 'âœ”' 
-      end
-      nact = nact+1
-    end
-    if not only_enabled or status == 'âœ”' then
-      -- get the name
-      v = string.match (v, "(.*)%.lua")
-      text = text..v..'  '..status..'\n'
-    end
+local function get_filter(msg, var_name)
+ local hash = get_filter_hash(msg)
+ if hash then
+  local value = redis:hget(hash, var_name)
+  if value == 'msg' then
+   return 'کلمه ی کاربردی شما ممنوع است، در صورت تکرار با شما برخورد خواهد شد'
+  elseif value == 'kick' then
+   send_large_msg('chat#id'..msg.to.id, "به دلیل عدم رعایت قوانین گفتاری از ادامه ی گفتوگو محروم میشوید")
+   chat_del_user('chat#id'..msg.to.id, 'user#id'..msg.from.id, ok_cb, true)
   end
-  local text = text..'\n'..nact..' plugins enabled from '..nsum..' plugins installed.'
-  return text
+ end
 end
 
-local function reload_plugins( )
-  plugins = {}
-  load_plugins()
-  return list_plugins(true)
-end
-
-
-local function enable_plugin( plugin_name )
-  print('checking if '..plugin_name..' exists')
-  -- Check if plugin is enabled
-  if plugin_enabled(plugin_name) then
-    return 'Plugin '..plugin_name..' is enabled'
+local function get_filter_act(msg, var_name)
+ local hash = get_filter_hash(msg)
+ if hash then
+  local value = redis:hget(hash, var_name)
+  if value == 'msg' then
+   return 'اخطار و تذکر به این کلمه'
+  elseif value == 'kick' then
+   return 'این کلمه ممنوع است و حذف خواهید شد'
+  elseif value == 'none' then
+   return 'این کلمه از فیلتر خارج شده است'
   end
-  -- Checks if plugin exists
-  if plugin_exists(plugin_name) then
-    -- Add to the config table
-    table.insert(_config.enabled_plugins, plugin_name)
-    print(plugin_name..' added to _config table')
-    save_config()
-    -- Reload the plugins
-    return reload_plugins( )
-  else
-    return 'Plugin '..plugin_name..' does not exists'
-  end
-end
-
-local function disable_plugin( name, chat )
-  -- Check if plugins exists
-  if not plugin_exists(name) then
-    return 'Plugin '..name..' does not exists'
-  end
-  local k = plugin_enabled(name)
-  -- Check if plugin is enabled
-  if not k then
-    return 'Plugin '..name..' not enabled'
-  end
-  -- Disable and reload
-  table.remove(_config.enabled_plugins, k)
-  save_config( )
-  return reload_plugins(true)    
-end
-
-local function disable_plugin_on_chat(receiver, plugin)
-  if not plugin_exists(plugin) then
-    return "Plugin doesn't exists"
-  end
-
-  if not _config.disabled_plugin_on_chat then
-    _config.disabled_plugin_on_chat = {}
-  end
-
-  if not _config.disabled_plugin_on_chat[receiver] then
-    _config.disabled_plugin_on_chat[receiver] = {}
-  end
-
-  _config.disabled_plugin_on_chat[receiver][plugin] = true
-
-  save_config()
-  return 'Plugin '..plugin..' disabled on this chat'
-end
-
-local function reenable_plugin_on_chat(receiver, plugin)
-  if not _config.disabled_plugin_on_chat then
-    return 'There aren\'t any disabled plugins'
-  end
-
-  if not _config.disabled_plugin_on_chat[receiver] then
-    return 'There aren\'t any disabled plugins for this chat'
-  end
-
-  if not _config.disabled_plugin_on_chat[receiver][plugin] then
-    return 'This plugin is not disabled'
-  end
-
-  _config.disabled_plugin_on_chat[receiver][plugin] = false
-  save_config()
-  return 'Plugin '..plugin..' is enabled again'
+ end
 end
 
 local function run(msg, matches)
-  -- Show the available plugins 
-  if matches[1] == '!plugins' and is_sudo(msg) then --after changed to moderator mode, set only sudo
-    return list_all_plugins()
+ local data = load_data(_config.moderation.data)
+ if matches[1] == "ilterlist" then
+  return list_filter(msg)
+ elseif matches[1] == "ilter" and matches[2] == ">" then
+  if data[tostring(msg.to.id)] then
+   local settings = data[tostring(msg.to.id)]['settings']
+   if not is_momod(msg) then
+    return "شما مدير نيستيد"
+   else
+    local value = 'msg'
+    local name = string.sub(matches[3]:lower(), 1, 1000)
+    local text = save_filter(msg, name, value)
+    return text
+   end
   end
-
-  -- Re-enable a plugin for this chat
-  if matches[1] == 'enable' and matches[3] == 'chat' then
-    local receiver = get_receiver(msg)
-    local plugin = matches[2]
-    print("enable "..plugin..' on this chat')
-    return reenable_plugin_on_chat(receiver, plugin)
+ elseif matches[1] == "ilter" and matches[2] == "+" then
+  if data[tostring(msg.to.id)] then
+   local settings = data[tostring(msg.to.id)]['settings']
+   if not is_momod(msg) then
+    return "شما مدير نيستيد"
+   else
+    local value = 'kick'
+    local name = string.sub(matches[3]:lower(), 1, 1000)
+    local text = save_filter(msg, name, value)
+    return text
+   end
   end
-
-  -- Enable a plugin
-  if matches[1] == 'enable' and is_sudo(msg) then --after changed to moderator mode, set only sudo
-    local plugin_name = matches[2]
-    print("enable: "..matches[2])
-    return enable_plugin(plugin_name)
+ elseif matches[1] == "ilter" and matches[2] == "-" then
+  if data[tostring(msg.to.id)] then
+   local settings = data[tostring(msg.to.id)]['settings']
+   if not is_momod(msg) then
+    return "شما مدير نيستيد"
+   else
+    local value = 'none'
+    local name = string.sub(matches[3]:lower(), 1, 1000)
+    local text = save_filter(msg, name, value)
+    return text
+   end
   end
-
-  -- Disable a plugin on a chat
-  if matches[1] == 'disable' and matches[3] == 'chat' then
-    local plugin = matches[2]
-    local receiver = get_receiver(msg)
-    print("disable "..plugin..' on this chat')
-    return disable_plugin_on_chat(receiver, plugin)
+ elseif matches[1] == "ilter" and matches[2] == "?" then
+  return get_filter_act(msg, matches[3]:lower())
+ else
+  if is_sudo(msg) then
+   return
+  elseif is_admin(msg) then
+   return
+  elseif is_momod(msg) then
+   return
+  elseif tonumber(msg.from.id) == tonumber(our_id) then
+   return
+  else
+   return get_filter(msg, msg.text:lower())
   end
-
-  -- Disable a plugin
-  if matches[1] == 'disable' and is_sudo(msg) then --after changed to moderator mode, set only sudo
-    if matches[2] == 'plugins' then
-    	return 'This plugin can\'t be disabled'
-    end
-    print("disable: "..matches[2])
-    return disable_plugin(matches[2])
-  end
-
-  -- Reload all the plugins!
-  if matches[1] == 'reload' and is_sudo(msg) then --after changed to moderator mode, set only sudo
-    return reload_plugins(true)
-  end
+ end
 end
 
 return {
-  description = "Plugin to manage other plugins. Enable, disable or reload.", 
-  usage = {
-      moderator = {
-          "!plugins disable [plugin] chat : disable plugin only this chat.",
-          "!plugins enable [plugin] chat : enable plugin only this chat.",
-          },
-      sudo = {
-          "!plugins : list all plugins.",
-          "!plugins enable [plugin] : enable plugin.",
-          "!plugins disable [plugin] : disable plugin.",
-          "!plugins reload : reloads all plugins." },
-          },
-  patterns = {
-    "^!plugins$",
-    "^!plugins? (enable) ([%w_%.%-]+)$",
-    "^!plugins? (disable) ([%w_%.%-]+)$",
-    "^!plugins? (enable) ([%w_%.%-]+) (chat)",
-    "^!plugins? (disable) ([%w_%.%-]+) (chat)",
-    "^!plugins? (reload)$" },
-  run = run,
-  moderated = true, -- set to moderator mode
-  --privileged = true
+ description = "Set and Get Variables", 
+ usagehtm = '<tr><td align="center">filter > کلمه</td><td align="right">این دستور یک کلمه را ممنوع میکند و اگر توسط کاربری این کلمه استفاده شود، به او تذکر داده خواهد شد</td></tr>'
+ ..'<tr><td align="center">filter + کلمه</td><td align="right">این دستور کلمه ای را فیلتر میکند به طوری که اگر توسط کاربری استفاده شود، ایشان کیک میگردند</td></tr>'
+ ..'<tr><td align="center">filter - کلمه</td><td align="right">کلمه ای را از ممنوعیت یا فیلترینگ خارج میکند</td></tr>'
+ ..'<tr><td align="center">filter ? کلمه</td><td align="right">با این دستوع اکشن بر روی کلمه ای را میتوانید مشاهده کنید یعنی میتوانید متوجه شوید که این کلمه فیلتر است،ممنوع است یا از فیلترینگ خارج شده</td></tr>',
+ usage = {
+ user = {
+  "filter ? (word) : مشاهده عکس العمل",
+  "filterlist : لیست فیلتر شده ها",
+ },
+ moderator = {
+  "filter > (word) : اخطار کردن لغت",
+  "filter + (word) : ممنوع کردن لغت",
+  "filter - (word) : حذف از فیلتر",
+ },
+ },
+ patterns = {
+  "^![Ff](ilter) (.+) (.*)$",
+  "^![Ff](ilterlist)$",
+  "(.*)",
+ },
+ run = run
 }
-
-end
